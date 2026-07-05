@@ -1,61 +1,114 @@
+import av
 import cv2
 import streamlit as st
+from streamlit_webrtc import (
+    VideoProcessorBase,
+    RTCConfiguration,
+    WebRtcMode,
+    webrtc_streamer,
+)
 
 from utils.detector import detect_face
 from utils.preprocess import preprocess_face
 from utils.predict import predict_drowsiness
 from utils.alarm import start_alarm, stop_alarm
 
-# ---------------------------------------------------
+# ---------------------------------------
 # Page Config
-# ---------------------------------------------------
+# ---------------------------------------
 
 st.set_page_config(
-    page_title="Driver Drowsiness Detection",
+    page_title="DriveGuard AI",
     page_icon="🚗",
     layout="wide"
 )
 
-# ---------------------------------------------------
-# Title
-# ---------------------------------------------------
+# ---------------------------------------
+# Custom CSS
+# ---------------------------------------
 
-st.title("🚗 Driver Drowsiness Detection System")
+st.markdown("""
+<style>
+
+.main-title{
+    text-align:center;
+    font-size:42px;
+    font-weight:bold;
+    color:#1565C0;
+}
+
+.sub-title{
+    text-align:center;
+    color:gray;
+    font-size:18px;
+}
+
+.metric-box{
+    background:#F5F5F5;
+    padding:15px;
+    border-radius:12px;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------
+# Title
+# ---------------------------------------
 
 st.markdown(
-    "Real-Time Driver Monitoring using Deep Learning"
+    "<p class='main-title'>🚗 DriveGuard AI</p>",
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    "<p class='sub-title'>Real-Time Driver Drowsiness Detection using Deep Learning</p>",
+    unsafe_allow_html=True
 )
 
 st.divider()
 
-# ---------------------------------------------------
+# ---------------------------------------
 # Sidebar
-# ---------------------------------------------------
+# ---------------------------------------
 
 st.sidebar.title("Project Information")
 
 st.sidebar.success("Model Loaded Successfully")
 
-st.sidebar.write("### Model")
+st.sidebar.markdown("---")
 
+st.sidebar.write("### Model")
 st.sidebar.write("Custom CNN")
 
 st.sidebar.write("### Classes")
-
-st.sidebar.write("- Alert")
-st.sidebar.write("- Drowsy")
+st.sidebar.write("• Alert")
+st.sidebar.write("• Drowsy")
 
 st.sidebar.write("### Input Size")
-
-st.sidebar.write("128 x 128")
+st.sidebar.write("128 × 128")
 
 st.sidebar.write("### Framework")
+st.sidebar.write("TensorFlow")
+st.sidebar.write("Streamlit")
+st.sidebar.write("OpenCV")
 
-st.sidebar.write("TensorFlow + Streamlit")
+st.sidebar.markdown("---")
 
-# ---------------------------------------------------
+st.sidebar.info(
+"""
+Instructions
+
+1. Click START
+2. Allow Camera Permission
+3. Sit in front of camera
+4. AI predicts Alert/Drowsy
+"""
+)
+
+# ---------------------------------------
 # Layout
-# ---------------------------------------------------
+# ---------------------------------------
 
 left, right = st.columns([3,1])
 
@@ -63,7 +116,7 @@ with left:
 
     st.subheader("📷 Live Camera")
 
-    frame_placeholder = st.empty()
+    
 
 with right:
 
@@ -77,7 +130,7 @@ with right:
 
     st.subheader("Fatigue Score")
 
-    fatigue_bar = st.progress(0)
+    fatigue_box = st.progress(0)
 
     st.subheader("Alarm")
 
@@ -85,64 +138,81 @@ with right:
 
 st.divider()
 
-# ---------------------------------------------------
-# Buttons
-# ---------------------------------------------------
+# ---------------------------------------
+# WebRTC Configuration
+# ---------------------------------------
 
-col1, col2 = st.columns(2)
+RTC_CONFIGURATION = RTCConfiguration(
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]}
+        ]
+    }
+)
 
-start = col1.button("▶ Start Camera")
 
-stop = col2.button("⏹ Stop Camera")
+# ==========================================================
+# Session State
+# ==========================================================
 
-# ---------------------------------------------------
-# Camera
-# ---------------------------------------------------
+if "status" not in st.session_state:
+    st.session_state.status = "Waiting..."
 
-if start:
+if "confidence" not in st.session_state:
+    st.session_state.confidence = 0.0
 
-    cap = cv2.VideoCapture(0)
+if "fatigue" not in st.session_state:
+    st.session_state.fatigue = 0
 
-    while cap.isOpened():
+if "alarm" not in st.session_state:
+    st.session_state.alarm = False
 
-        ret, frame = cap.read()
+if "face_detected" not in st.session_state:
+    st.session_state.face_detected = False
 
-        if not ret:
-            st.error("Unable to open webcam.")
-            break
 
-        face, coords = detect_face(frame)
+# ==========================================================
+# Video Processor
+# ==========================================================
+
+class VideoProcessor(VideoProcessorBase):
+
+    def recv(self, frame):
+
+        image = frame.to_ndarray(format="bgr24")
+
+        face, coords = detect_face(image)
 
         if face is not None:
 
-            processed = preprocess_face(face)
+            st.session_state.face_detected = True
 
-            status, confidence, fatigue = predict_drowsiness(processed)
+            face = preprocess_face(face)
 
-            x, y, w, h = coords
+            status, confidence, fatigue = predict_drowsiness(face)
 
-            if status == "Alert":
+            st.session_state.status = status
+            st.session_state.confidence = confidence
+            st.session_state.fatigue = fatigue
 
-                color = (0,255,0)
+            if status == "Drowsy":
 
-                stop_alarm()
-
-                status_box.success("🟢 ALERT")
-
-                alarm_box.success("OFF")
-
-            else:
+                st.session_state.alarm = True
+                start_alarm()
 
                 color = (0,0,255)
 
-                start_alarm()
+            else:
 
-                status_box.error("🔴 DROWSY")
+                st.session_state.alarm = False
+                stop_alarm()
 
-                alarm_box.error("ON")
+                color = (0,255,0)
+
+            x, y, w, h = coords
 
             cv2.rectangle(
-                frame,
+                image,
                 (x,y),
                 (x+w,y+h),
                 color,
@@ -150,49 +220,114 @@ if start:
             )
 
             cv2.putText(
-                frame,
-                f"{status} ({confidence:.1f}%)",
-                (x,y-10),
+                image,
+                status,
+                (x,y-15),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
                 color,
                 2
             )
 
-            confidence_box.metric(
-                "Prediction",
-                f"{confidence:.2f}%"
+            cv2.putText(
+                image,
+                f"{confidence:.1f}%",
+                (x,y+h+25),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
             )
-
-            fatigue_bar.progress(int(fatigue))
 
         else:
 
             stop_alarm()
 
-            status_box.warning("No Face")
+            st.session_state.face_detected = False
+            st.session_state.status = "No Face"
+            st.session_state.confidence = 0
+            st.session_state.fatigue = 0
+            st.session_state.alarm = False
 
-            confidence_box.metric(
-                "Prediction",
-                "--"
-            )
-
-            fatigue_bar.progress(0)
-
-            alarm_box.info("OFF")
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        frame_placeholder.image(
-            frame,
-            channels="RGB",
-            use_container_width=True
+        return av.VideoFrame.from_ndarray(
+            image,
+            format="bgr24"
         )
 
-        if stop:
 
-            break
 
-    cap.release()
+# ==========================================================
+# Start Webcam
+# ==========================================================
 
-    stop_alarm()    
+webrtc_ctx = webrtc_streamer(
+    key="driver-drowsiness",
+    mode=WebRtcMode.SENDRECV,
+    rtc_configuration=RTC_CONFIGURATION,
+    media_stream_constraints={
+        "video": True,
+        "audio": False,
+    },
+    video_processor_factory=VideoProcessor,
+    async_processing=True,
+)
+
+
+
+# ==========================================================
+# Live Dashboard
+# ==========================================================
+
+status = st.session_state.status
+confidence = st.session_state.confidence
+fatigue = st.session_state.fatigue
+alarm = st.session_state.alarm
+
+if status == "Alert":
+
+    status_box.success("🟢 ALERT")
+
+elif status == "Drowsy":
+
+    status_box.error("🔴 DROWSY")
+
+else:
+
+    status_box.warning("🟡 No Face")
+
+
+confidence_box.metric(
+    "Confidence",
+    f"{confidence:.2f}%"
+)
+
+fatigue_box.progress(min(max(int(fatigue), 0), 100))
+
+if alarm:
+
+    alarm_box.error("🚨 Alarm ON")
+
+else:
+
+    alarm_box.success("✅ Alarm OFF")
+
+
+
+
+# ==========================================================
+# Footer
+# ==========================================================
+
+st.divider()
+
+st.markdown(
+    """
+    <div style="text-align:center; color:gray;">
+        🚗 <b>DriveGuard AI</b><br><br>
+
+        Real-Time Driver Drowsiness Detection using
+        TensorFlow • OpenCV • Streamlit • WebRTC
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
